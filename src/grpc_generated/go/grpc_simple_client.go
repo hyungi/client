@@ -33,6 +33,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"time"
 
 	triton "github.com/triton-inference-server/client/src/grpc_generated/go/grpc-client"
@@ -252,4 +253,91 @@ func main() {
 			log.Fatalf("Incorrect results from inference")
 		}
 	}
+
+	inferResponse2 := ModelInfer(client, []string{"1", "1", "3", "4", "1"})
+	outputFrom(inferResponse2)
+
+	inferResponse2 = ModelInfer(client, []string{"1", "2", "3", "4", "1"})
+	outputFrom(inferResponse2)
+}
+
+func ModelInfer(client triton.GRPCInferenceServiceClient, strArray []string) *triton.ModelInferResponse {
+	// Create context for our request with 10 second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	byteArray := make([][]byte, len(strArray))
+
+	for i, str := range strArray {
+		byteArray[i] = []byte(str)
+	}
+
+	// Create request input tensors
+	inferInputs := []*triton.ModelInferRequest_InferInputTensor{
+		{
+			Name:     "f1",
+			Datatype: "BYTES",
+			Shape:    []int64{1, 5},
+			Contents: &triton.InferTensorContents{
+				BytesContents: byteArray,
+			},
+		},
+		{
+			Name:     "f2",
+			Datatype: "FP32",
+			Shape:    []int64{1, 1},
+			Contents: &triton.InferTensorContents{
+				Fp32Contents: []float32{3.5},
+			},
+		},
+	}
+	for _, inferInput := range inferInputs {
+		fmt.Printf("%v\n", inferInput)
+	}
+
+	// Create request input output tensors
+	inferOutputs := []*triton.ModelInferRequest_InferRequestedOutputTensor{
+		{
+			Name: "dense_1",
+		},
+	}
+
+	// Create inference request for specific model/version
+	modelInferRequest := triton.ModelInferRequest{
+		ModelName:    "simple_string_array",
+		ModelVersion: "1",
+		Inputs:       inferInputs,
+		Outputs:      inferOutputs,
+	}
+
+	// Submit inference request to server
+	modelInferResponse, err := client.ModelInfer(ctx, &modelInferRequest)
+	if err != nil {
+		log.Fatalf("Error processing InferRequest: %v", err)
+	}
+	return modelInferResponse
+}
+
+func outputFrom(response *triton.ModelInferResponse) {
+	// todo ids of request and response is same
+	for i, output := range response.GetOutputs() {
+		// Support only FP32 at the moment.
+		if output.Datatype == "FP32" {
+			fmt.Println(output.Name, float32ArrFromBytes(output, response.RawOutputContents[i]))
+		}
+	}
+}
+
+func float32ArrFromBytes(output *triton.ModelInferResponse_InferOutputTensor, rawData []byte) []float32 {
+	numOfElem := int64(1)
+	for _, dim := range output.GetShape() {
+		numOfElem *= dim
+	}
+
+	float32Arr := make([]float32, 0, int(numOfElem))
+	for i := 0; i < int(numOfElem); i++ {
+		bits := binary.LittleEndian.Uint32(rawData)
+		float32Arr = append(float32Arr, math.Float32frombits(bits))
+	}
+	return float32Arr
 }
